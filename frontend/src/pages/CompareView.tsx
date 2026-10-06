@@ -80,8 +80,18 @@ export default function CompareView() {
     }
   }, [currentSteleId, steleId, steles]);
 
+  // 比对候选跳过登记台已标重份的拓本（重份与正本是同一件，自比无意义）
   const steleRubbings = useMemo(
-    () => rubbings.filter((rubbing) => rubbing.steleId === steleId).sort((a, b) => a.versionNo - b.versionNo),
+    () =>
+      rubbings
+        .filter((rubbing) => rubbing.steleId === steleId && rubbing.duplicateOf == null)
+        .sort((a, b) => a.versionNo - b.versionNo),
+    [rubbings, steleId],
+  );
+
+  /** 当前碑刻下被跳过的重份数（用于提示） */
+  const skippedDuplicateCount = useMemo(
+    () => rubbings.filter((rubbing) => rubbing.steleId === steleId && rubbing.duplicateOf != null).length,
     [rubbings, steleId],
   );
 
@@ -305,6 +315,9 @@ export default function CompareView() {
           <Typography.Text type="secondary">
             A 损泐 {diff.result.totalA} 条 · B 损泐 {diff.result.totalB} 条
           </Typography.Text>
+          {skippedDuplicateCount > 0 ? (
+            <Typography.Text type="secondary">已跳过重份 {skippedDuplicateCount} 份（登记台按收藏号标记）</Typography.Text>
+          ) : null}
           <Button
             size="small"
             onClick={async () => {

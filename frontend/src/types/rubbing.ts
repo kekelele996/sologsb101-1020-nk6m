@@ -32,11 +32,16 @@ export interface Rubbing {
   dateGuess: string;
   /** 状态 */
   state: RubbingState;
+  /**
+   * 重份标记：同一收藏号重复登记时，后登那份指向先登正本的 id；
+   * null 表示非重份。只打标记不并数据，比对台跳过，撤销标记即还原。
+   */
+  duplicateOf: string | null;
   createdAt: number;
   updatedAt: number;
 }
 
-export type RubbingDraft = Omit<Rubbing, 'id' | 'createdAt' | 'updatedAt'>;
+export type RubbingDraft = Omit<Rubbing, 'id' | 'createdAt' | 'updatedAt' | 'duplicateOf'>;
 
 export const RUBBING_METHOD_LABEL: Record<RubbingMethod, string> = {
   rub: '擦拓',
@@ -87,6 +92,38 @@ export function nextRubbingState(state: RubbingState): RubbingState {
 }
 
 export const PAPER_TYPE_OPTIONS: readonly string[] = ['宣纸', '棉连纸', '皮纸', '罗纹纸', '净皮宣'];
+
+/** 重份组：同一收藏号（非空）登记了两份及以上 */
+export interface DuplicateGroup {
+  /** 收藏号（已去首尾空白） */
+  collectionNo: string;
+  /** 先登的那一份，保留为正本 */
+  primary: Rubbing;
+  /** 后登的重份（标记 / 撤销标记的对象） */
+  copies: Rubbing[];
+}
+
+/**
+ * 按收藏号识别重份：收藏号空着的不认重份；同号两份及以上成组，
+ * 组内按登记先后（createdAt → versionNo → id）排序，最早者为先登正本，其余为后登重份。
+ */
+export function findDuplicateGroups(rubbings: Rubbing[]): DuplicateGroup[] {
+  const byCollectionNo = new Map<string, Rubbing[]>();
+  rubbings.forEach((rubbing) => {
+    const key = rubbing.collectionNo.trim();
+    if (key.length === 0) return;
+    byCollectionNo.set(key, [...(byCollectionNo.get(key) ?? []), rubbing]);
+  });
+  const groups: DuplicateGroup[] = [];
+  byCollectionNo.forEach((list, collectionNo) => {
+    if (list.length < 2) return;
+    const sorted = [...list].sort(
+      (a, b) => a.createdAt - b.createdAt || a.versionNo - b.versionNo || a.id.localeCompare(b.id),
+    );
+    groups.push({ collectionNo, primary: sorted[0] as Rubbing, copies: sorted.slice(1) });
+  });
+  return groups.sort((a, b) => a.collectionNo.localeCompare(b.collectionNo));
+}
 
 export function createEmptyRubbingDraft(steleId: string, versionNo: number): RubbingDraft {
   return {

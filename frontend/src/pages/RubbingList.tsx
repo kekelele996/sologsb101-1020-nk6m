@@ -19,7 +19,7 @@ import {
   Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { DeleteOutlined, EditOutlined, PlusOutlined, TagsOutlined } from '@ant-design/icons';
+import { CopyOutlined, DeleteOutlined, EditOutlined, PlusOutlined, TagsOutlined } from '@ant-design/icons';
 import EmptyPanel from '@/components/common/EmptyPanel';
 import FilterBar, { useFilterQuery, type FilterSelectConfig } from '@/components/common/FilterBar';
 import StatBadge from '@/components/common/StatBadge';
@@ -32,9 +32,11 @@ import {
   createRubbing,
   createSeal,
   loadRubbings,
+  markRubbingDuplicate,
   removeRubbing,
   removeSeal,
   resetRubbingFilters,
+  selectDuplicateGroups,
   selectFilteredRubbings,
   selectRubbings,
   selectSeals,
@@ -42,6 +44,7 @@ import {
   setRubbingKeyword,
   setRubbingStates,
   setRubbingSteleFilter,
+  unmarkRubbingDuplicate,
   updateRubbing,
   updateSeal,
 } from '@/stores/rubbingSlice';
@@ -88,6 +91,7 @@ export default function RubbingList() {
   const filtered = useAppSelector(selectFilteredRubbings);
   const seals = useAppSelector(selectSeals);
   const losses = useAppSelector(selectLosses);
+  const duplicateGroups = useAppSelector(selectDuplicateGroups);
   const steleFilterId = useAppSelector((state) => state.rubbing.filters.steleId);
 
   const url = useFilterQuery(FILTER_KEYS);
@@ -126,8 +130,20 @@ export default function RubbingList() {
       toCompare: rubbings.filter((rubbing) => rubbing.state === 'toCompare').length,
       seals: seals.length,
       losses: losses.length,
+      duplicates: rubbings.filter((rubbing) => rubbing.duplicateOf != null).length,
     };
   }, [losses.length, rubbings, seals.length]);
+
+  /** 检测出但尚未标记的后登重份 id 集合（表格里打「疑似重份」用） */
+  const unmarkedCopyIds = useMemo(() => {
+    const ids = new Set<string>();
+    duplicateGroups.forEach((group) =>
+      group.copies.forEach((copy) => {
+        if (copy.duplicateOf == null) ids.add(copy.id);
+      }),
+    );
+    return ids;
+  }, [duplicateGroups]);
 
   const steleTitle = (steleId: string): string => steles.find((stele) => stele.id === steleId)?.title ?? steleId;
 
@@ -183,6 +199,18 @@ export default function RubbingList() {
     setSealOpen(true);
   };
 
+  /** 把后登那份标为重份：只写 duplicateOf 指向先登正本，损泐与钤印原样保留 */
+  const markDuplicate = async (copy: Rubbing, primary: Rubbing): Promise<void> => {
+    await dispatch(markRubbingDuplicate({ id: copy.id, primaryId: primary.id })).unwrap();
+    message.success(`已把第 ${copy.versionNo} 版标为第 ${primary.versionNo} 版的重份，比对台将跳过`);
+  };
+
+  /** 撤销重份标记：duplicateOf 置回 null，回到未标记的原样 */
+  const unmarkDuplicate = async (copy: Rubbing): Promise<void> => {
+    await dispatch(unmarkRubbingDuplicate(copy.id)).unwrap();
+    message.success(`已撤销第 ${copy.versionNo} 版的重份标记，恢复原样`);
+  };
+
   const submitSeal = async (): Promise<void> => {
     if (!sealRubbing) return;
     const values = await sealForm.validateFields();
@@ -201,12 +229,17 @@ export default function RubbingList() {
     {
       title: '版本',
       dataIndex: 'versionNo',
-      width: 90,
+      width: 150,
       sorter: (a, b) => a.versionNo - b.versionNo,
       render: (value: number, record) => (
-        <Space size={4}>
+        <Space size={4} wrap>
           <Tag color="#2f3a34">第 {value} 版</Tag>
           <Tag color={RUBBING_STATE_COLOR[record.state]}>{RUBBING_STATE_LABEL[record.state]}</Tag>
+          {record.duplicateOf != null ? (
+            <Tag color="#8c8c8c">重份</Tag>
+          ) : unmarkedCopyIds.has(record.id) ? (
+            <Tag color="#c9963c">疑似重份</Tag>
+          ) : null}
         </Space>
       ),
     },
@@ -235,7 +268,7 @@ export default function RubbingList() {
     {
       title: '操作',
       key: 'action',
-      width: 250,
+      width: 290,
       render: (_value, record) => (
         <Space size={4} wrap>
           <Button size="small" type="link" onClick={() => void dispatch(advanceRubbingState(record.id))}>
@@ -244,6 +277,11 @@ export default function RubbingList() {
           <Button size="small" type="link" icon={<TagsOutlined />} onClick={() => openSeals(record)}>
             钤印
           </Button>
+          {record.duplicateOf != null ? (
+            <Button size="small" type="link" icon={<CopyOutlined />} onClick={() => void unmarkDuplicate(record)}>
+              撤销重份
+            </Button>
+          ) : null}
           <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(record)}>
             编辑
           </Button>
@@ -303,9 +341,74 @@ export default function RubbingList() {
         <StatBadge label="拓本总数" value={stat.total} suffix="份" tone="primary" />
         <StatBadge label="已编目占比" value={`${stat.catalogedPercent}%`} percent={stat.catalogedPercent} tone="success" />
         <StatBadge label="待比对" value={stat.toCompare} suffix="份" tone="warning" />
+        <StatBadge label="重份标记" value={stat.duplicates} suffix="份" tone="danger" />
         <StatBadge label="钤印总数" value={stat.seals} suffix="方" tone="info" />
         <StatBadge label="损泐字位" value={stat.losses} suffix="条" tone="danger" />
       </div>
+
+      {duplicateGroups.length > 0 ? (
+        <Card
+          size="small"
+          style={{ marginTop: 16, borderColor: '#c9963c' }}
+          title={
+            <Space size={6}>
+              <CopyOutlined style={{ color: '#c9963c' }} />
+              <span>重份核对 · 按收藏号发现 {duplicateGroups.length} 组</span>
+            </Space>
+          }
+        >
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 10, fontSize: 12 }}>
+            同一收藏号只留先登一份参与比对：把后登的标为重份后，比对台自动跳过；两份的损泐与钤印都原样保留，撤销标记即还原。
+          </Typography.Paragraph>
+          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+            {duplicateGroups.map((group) => (
+              <div
+                key={group.collectionNo}
+                style={{ border: '1px solid rgba(47,58,52,0.14)', borderRadius: 8, padding: '8px 12px' }}
+              >
+                <Space size={8} wrap>
+                  <Tag color="#2f3a34">收藏号 {group.collectionNo}</Tag>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    共 {group.copies.length + 1} 份
+                  </Typography.Text>
+                </Space>
+                <div style={{ marginTop: 6 }}>
+                  <Space size={6} wrap>
+                    <Tag color="#2f6f4f">先登保留</Tag>
+                    <span>
+                      第 {group.primary.versionNo} 版 · {steleTitle(group.primary.steleId)} ·{' '}
+                      {group.primary.dateGuess || '年代待考'}
+                    </span>
+                  </Space>
+                </div>
+                {group.copies.map((copy) => (
+                  <div key={copy.id} style={{ marginTop: 4 }}>
+                    <Space size={6} wrap>
+                      {copy.duplicateOf != null ? (
+                        <Tag color="#8c8c8c">已标重份</Tag>
+                      ) : (
+                        <Tag color="#c9963c">后登重份</Tag>
+                      )}
+                      <span>
+                        第 {copy.versionNo} 版 · {steleTitle(copy.steleId)} · {copy.dateGuess || '年代待考'}
+                      </span>
+                      {copy.duplicateOf != null ? (
+                        <Button size="small" type="link" onClick={() => void unmarkDuplicate(copy)}>
+                          撤销标记
+                        </Button>
+                      ) : (
+                        <Button size="small" type="link" onClick={() => void markDuplicate(copy, group.primary)}>
+                          标为重份
+                        </Button>
+                      )}
+                    </Space>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </Space>
+        </Card>
+      ) : null}
 
       <FilterBar
         keyword={url.keyword}

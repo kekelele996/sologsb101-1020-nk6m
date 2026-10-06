@@ -5,7 +5,9 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import { createId, db, removeRubbingCascade, renumberRubbings } from '@/utils/db';
 import {
+  findDuplicateGroups,
   nextRubbingState,
+  type DuplicateGroup,
   type Rubbing,
   type RubbingDraft,
   type RubbingMethod,
@@ -50,7 +52,7 @@ export const loadRubbings = createAsyncThunk('rubbing/load', async () => {
 
 export const createRubbing = createAsyncThunk('rubbing/create', async (draft: RubbingDraft, { dispatch }) => {
   const now = Date.now();
-  const row: Rubbing = { ...draft, id: createId('rub'), createdAt: now, updatedAt: now };
+  const row: Rubbing = { ...draft, duplicateOf: null, id: createId('rub'), createdAt: now, updatedAt: now };
   await db.rubbings.put(row);
   await renumberRubbings(row.steleId);
   await dispatch(loadRubbings());
@@ -98,6 +100,26 @@ export const removeRubbing = createAsyncThunk('rubbing/remove', async (id: strin
   if (row) await renumberRubbings(row.steleId);
   await dispatch(loadRubbings());
 });
+
+/* ------------------------------ 重份标记 ------------------------------ */
+
+/** 把后登那份标为重份：只写 duplicateOf 指向先登正本，损泐与钤印原样保留 */
+export const markRubbingDuplicate = createAsyncThunk(
+  'rubbing/markDuplicate',
+  async (payload: { id: string; primaryId: string }, { dispatch }) => {
+    await db.rubbings.update(payload.id, { duplicateOf: payload.primaryId, updatedAt: Date.now() } as never);
+    await dispatch(loadRubbings());
+  },
+);
+
+/** 撤销重份标记：duplicateOf 置回 null，数据未动过，自然回到原样 */
+export const unmarkRubbingDuplicate = createAsyncThunk(
+  'rubbing/unmarkDuplicate',
+  async (id: string, { dispatch }) => {
+    await db.rubbings.update(id, { duplicateOf: null, updatedAt: Date.now() } as never);
+    await dispatch(loadRubbings());
+  },
+);
 
 /* ------------------------------ 钤印 ------------------------------ */
 
@@ -192,6 +214,11 @@ export const selectRubbingState = (state: RootState): RubbingState2 => state.rub
 export const selectRubbings = (state: RootState): Rubbing[] => state.rubbing.items;
 export const selectSeals = (state: RootState): Seal[] => state.rubbing.seals;
 export const selectCurrentRubbingId = (state: RootState): string | null => state.rubbing.currentRubbingId;
+
+/** 派生选择器：按收藏号识别出的重份组（收藏号空着的不认重份） */
+export function selectDuplicateGroups(state: RootState): DuplicateGroup[] {
+  return findDuplicateGroups(state.rubbing.items);
+}
 
 /** 派生选择器：关键字 + 拓法 + 状态 + 碑刻过滤 */
 export function selectFilteredRubbings(state: RootState): Rubbing[] {
