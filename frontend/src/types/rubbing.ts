@@ -32,6 +32,8 @@ export interface Rubbing {
   dateGuess: string;
   /** 状态 */
   state: RubbingState;
+  /** 重份标记：指向同碑同收藏号先登拓本的 id；null 表示非重份。已标重份的拓本比对台跳过 */
+  duplicateOf: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -99,5 +101,6 @@ export function createEmptyRubbingDraft(steleId: string, versionNo: number): Rub
     collectionNo: '',
     dateGuess: '',
     state: 'toCatalog',
+    duplicateOf: null,
   };
 }

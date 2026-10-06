@@ -50,7 +50,8 @@ export const loadRubbings = createAsyncThunk('rubbing/load', async () => {
 
 export const createRubbing = createAsyncThunk('rubbing/create', async (draft: RubbingDraft, { dispatch }) => {
   const now = Date.now();
-  const row: Rubbing = { ...draft, id: createId('rub'), createdAt: now, updatedAt: now };
+  // 表单不带 duplicateOf 字段，此处兜底为非重份
+  const row: Rubbing = { ...draft, duplicateOf: draft.duplicateOf ?? null, id: createId('rub'), createdAt: now, updatedAt: now };
   await db.rubbings.put(row);
   await renumberRubbings(row.steleId);
   await dispatch(loadRubbings());
@@ -96,6 +97,31 @@ export const removeRubbing = createAsyncThunk('rubbing/remove', async (id: strin
   const row = state.rubbing.items.find((item) => item.id === id);
   await removeRubbingCascade(id);
   if (row) await renumberRubbings(row.steleId);
+  await dispatch(loadRubbings());
+});
+
+/* ------------------------------ 重份标记 ------------------------------ */
+
+/** 把一组后登拓本标为重份（指向先登正本）；两份都保留，仅打标，比对台跳过 */
+export const markDuplicateGroup = createAsyncThunk(
+  'rubbing/markDuplicateGroup',
+  async (payload: { keeperId: string; duplicateIds: string[] }, { dispatch, getState }) => {
+    const state = getState() as RootState;
+    const now = Date.now();
+    const rows = state.rubbing.items
+      .filter((item) => payload.duplicateIds.includes(item.id) && item.id !== payload.keeperId)
+      .map((item) => ({ ...item, duplicateOf: payload.keeperId, updatedAt: now }));
+    if (rows.length > 0) await db.rubbings.bulkPut(rows);
+    await dispatch(loadRubbings());
+  },
+);
+
+/** 撤销重份标记：清空 duplicateOf 即回到原样，损泐与钤印从未动过 */
+export const unmarkDuplicate = createAsyncThunk('rubbing/unmarkDuplicate', async (id: string, { dispatch, getState }) => {
+  const state = getState() as RootState;
+  const row = state.rubbing.items.find((item) => item.id === id);
+  if (!row || !row.duplicateOf) return;
+  await db.rubbings.put({ ...row, duplicateOf: null, updatedAt: Date.now() });
   await dispatch(loadRubbings());
 });
 

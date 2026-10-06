@@ -1,6 +1,7 @@
 /**
  * IndexedDB 持久化层（Dexie 封装）
- * - 数据结构版本号与升级迁移逻辑（v1 → v2：Loss 增加 charNo 与复合索引，并按行号顺序重建历史字位记录）
+ * - 数据结构版本号与升级迁移逻辑（v1 → v2：Loss 增加 charNo 与复合索引，并按行号顺序重建历史字位记录；
+ *   v2 → v3：Rubbing 增加 duplicateOf 重份标记并回填 null）
  * - 五张业务表的增删改查与整库导入导出
  * - 首次打开自动播种三层互相引用的演示数据（幂等）
  * 纯前端应用：不依赖任何后端服务或数据库。
@@ -17,7 +18,7 @@ import { sortLosses } from './collate';
 export const DB_NAME = 'gbrubbing';
 
 /** 当前数据结构版本号 */
-export const DB_SCHEMA_VERSION = 2;
+export const DB_SCHEMA_VERSION = 3;
 
 /** localStorage 侧少量元数据键 */
 export const LS_KEYS = {
@@ -99,7 +100,7 @@ class RubbingDatabase extends Dexie {
     });
 
     // v2：Loss 增加 charNo 与 [rubbingId+lineNo+charNo] 复合索引，并按行号顺序重建历史字位记录
-    this.version(DB_SCHEMA_VERSION)
+    this.version(2)
       .stores({
         steles: 'id, title, era, form, location, updatedAt',
         rubbings: 'id, steleId, versionNo, method, inkTone, state, updatedAt',
@@ -128,6 +129,16 @@ class RubbingDatabase extends Dexie {
         });
         await table.bulkPut(sortLosses(rebuilt));
       });
+
+    // v3：Rubbing 增加 duplicateOf 重份标记（非索引字段，沿用 v2 表结构），历史记录回填 null
+    this.version(DB_SCHEMA_VERSION).upgrade(async (tx) => {
+      const table = tx.table<Rubbing>('rubbings');
+      const all = await table.toArray();
+      const patched = all
+        .filter((row) => row.duplicateOf === undefined)
+        .map((row) => ({ ...row, duplicateOf: null }));
+      if (patched.length > 0) await table.bulkPut(patched);
+    });
   }
 }
 
@@ -192,11 +203,13 @@ export async function seedDatabase(): Promise<void> {
   ];
 
   const rubbings: Rubbing[] = [
-    { id: 'rub_0101', steleId: 'stele_01', versionNo: 1, method: 'rub', paperType: '宣纸', inkTone: 'thick', sizeCm: '210×88', collectionNo: 'TB-0101', dateGuess: '明拓', state: 'cataloged', createdAt: now - day * 50, updatedAt: now - day * 10 },
-    { id: 'rub_0102', steleId: 'stele_01', versionNo: 2, method: 'cicada', paperType: '棉连纸', inkTone: 'light', sizeCm: '208×86', collectionNo: 'TB-0102', dateGuess: '清拓', state: 'toCompare', createdAt: now - day * 44, updatedAt: now - day * 6 },
-    { id: 'rub_0201', steleId: 'stele_02', versionNo: 1, method: 'pat', paperType: '皮纸', inkTone: 'thick', sizeCm: '250×196', collectionNo: 'TB-0201', dateGuess: '清中期拓', state: 'cataloged', createdAt: now - day * 40, updatedAt: now - day * 5 },
-    { id: 'rub_0202', steleId: 'stele_02', versionNo: 2, method: 'rub', paperType: '棉连纸', inkTone: 'light', sizeCm: '248×194', collectionNo: 'TB-0202', dateGuess: '清晚期拓', state: 'toCatalog', createdAt: now - day * 34, updatedAt: now - day * 4 },
-    { id: 'rub_0301', steleId: 'stele_03', versionNo: 1, method: 'rub', paperType: '净皮宣', inkTone: 'thick', sizeCm: '260×90', collectionNo: 'TB-0301', dateGuess: '民国拓', state: 'toCatalog', createdAt: now - day * 20, updatedAt: now - day * 2 },
+    { id: 'rub_0101', steleId: 'stele_01', versionNo: 1, method: 'rub', paperType: '宣纸', inkTone: 'thick', sizeCm: '210×88', collectionNo: 'TB-0101', dateGuess: '明拓', state: 'cataloged', duplicateOf: null, createdAt: now - day * 50, updatedAt: now - day * 10 },
+    { id: 'rub_0102', steleId: 'stele_01', versionNo: 2, method: 'cicada', paperType: '棉连纸', inkTone: 'light', sizeCm: '208×86', collectionNo: 'TB-0102', dateGuess: '清拓', state: 'toCompare', duplicateOf: null, createdAt: now - day * 44, updatedAt: now - day * 6 },
+    // 重份示例：与 rub_0101 同收藏号的后登本（同一件拓本被两人各登一份），初始未标记，供登记台识别演示
+    { id: 'rub_0103', steleId: 'stele_01', versionNo: 3, method: 'rub', paperType: '宣纸', inkTone: 'thick', sizeCm: '210×88', collectionNo: 'TB-0101', dateGuess: '明拓', state: 'toCatalog', duplicateOf: null, createdAt: now - day * 15, updatedAt: now - day },
+    { id: 'rub_0201', steleId: 'stele_02', versionNo: 1, method: 'pat', paperType: '皮纸', inkTone: 'thick', sizeCm: '250×196', collectionNo: 'TB-0201', dateGuess: '清中期拓', state: 'cataloged', duplicateOf: null, createdAt: now - day * 40, updatedAt: now - day * 5 },
+    { id: 'rub_0202', steleId: 'stele_02', versionNo: 2, method: 'rub', paperType: '棉连纸', inkTone: 'light', sizeCm: '248×194', collectionNo: 'TB-0202', dateGuess: '清晚期拓', state: 'toCatalog', duplicateOf: null, createdAt: now - day * 34, updatedAt: now - day * 4 },
+    { id: 'rub_0301', steleId: 'stele_03', versionNo: 1, method: 'rub', paperType: '净皮宣', inkTone: 'thick', sizeCm: '260×90', collectionNo: 'TB-0301', dateGuess: '民国拓', state: 'toCatalog', duplicateOf: null, createdAt: now - day * 20, updatedAt: now - day * 2 },
   ];
 
   const losses: Loss[] = [
@@ -206,6 +219,9 @@ export async function seedDatabase(): Promise<void> {
     { id: 'loss_010201', rubbingId: 'rub_0102', lineNo: 3, charNo: 7, type: 'blur', severity: 'medium', note: '晚拓，「壽」字已损', createdAt: now - day * 24, updatedAt: now - day * 24 },
     { id: 'loss_010202', rubbingId: 'rub_0102', lineNo: 9, charNo: 11, type: 'missing', severity: 'heavy', note: '「禮」字全缺', createdAt: now - day * 24, updatedAt: now - day * 22 },
     { id: 'loss_010203', rubbingId: 'rub_0102', lineNo: 12, charNo: 4, type: 'crack', severity: 'medium', note: '碑面斜裂一道', createdAt: now - day * 22, updatedAt: now - day * 22 },
+    // 重份本 rub_0103 的另一次独立标注：与 rub_0101 大同小有异，自比时差异看似正常
+    { id: 'loss_010301', rubbingId: 'rub_0103', lineNo: 3, charNo: 7, type: 'blur', severity: 'medium', note: '「壽」字右下漫漶（重份另记）', createdAt: now - day * 12, updatedAt: now - day * 12 },
+    { id: 'loss_010302', rubbingId: 'rub_0103', lineNo: 9, charNo: 11, type: 'missing', severity: 'heavy', note: '「禮」字缺末笔（重份另记）', createdAt: now - day * 12, updatedAt: now - day * 11 },
     { id: 'loss_020101', rubbingId: 'rub_0201', lineNo: 2, charNo: 5, type: 'crack', severity: 'light', note: '崖面细裂', createdAt: now - day * 18, updatedAt: now - day * 18 },
     { id: 'loss_020201', rubbingId: 'rub_0202', lineNo: 2, charNo: 5, type: 'crack', severity: 'light', note: '崖面细裂（同前）', createdAt: now - day * 20, updatedAt: now - day * 20 },
     { id: 'loss_020202', rubbingId: 'rub_0202', lineNo: 6, charNo: 3, type: 'blur', severity: 'medium', note: '晚拓，「頌」字已漫漶', createdAt: now - day * 18, updatedAt: now - day * 18 },
@@ -216,6 +232,7 @@ export async function seedDatabase(): Promise<void> {
     { id: 'seal_0101', rubbingId: 'rub_0101', sealText: '端方藏碑', position: '右下角', transcription: '端方（匋斋）收藏印', sealType: 'collection', createdAt: now - day * 40, updatedAt: now - day * 40 },
     { id: 'seal_0102', rubbingId: 'rub_0101', sealText: '匋斋鉴赏', position: '左下角', transcription: '端方鉴赏印', sealType: 'appraisal', createdAt: now - day * 40, updatedAt: now - day * 40 },
     { id: 'seal_0103', rubbingId: 'rub_0102', sealText: '艺风堂', position: '卷尾', transcription: '缪荃孙艺风堂藏书印', sealType: 'collection', createdAt: now - day * 30, updatedAt: now - day * 30 },
+    { id: 'seal_0104', rubbingId: 'rub_0103', sealText: '端方藏碑', position: '右下角', transcription: '端方（匋斋）收藏印（重份另记）', sealType: 'collection', createdAt: now - day * 12, updatedAt: now - day * 12 },
     { id: 'seal_0201', rubbingId: 'rub_0201', sealText: '石门旧拓', position: '左上角', transcription: '藏家自钤印', sealType: 'author', createdAt: now - day * 26, updatedAt: now - day * 26 },
   ];
 
@@ -294,7 +311,8 @@ export async function importSnapshot(snapshot: RubbingSnapshot): Promise<void> {
   await clearAllTables();
   await db.transaction('rw', [db.steles, db.rubbings, db.losses, db.seals, db.compares], async () => {
     await db.steles.bulkPut(snapshot.steles);
-    await db.rubbings.bulkPut(snapshot.rubbings);
+    // 兼容 v3 之前的备份：缺 duplicateOf 字段的拓本一律按非重份回填
+    await db.rubbings.bulkPut(snapshot.rubbings.map((row) => ({ ...row, duplicateOf: row.duplicateOf ?? null })));
     await db.losses.bulkPut(snapshot.losses);
     await db.seals.bulkPut(snapshot.seals);
     await db.compares.bulkPut(snapshot.compares);
@@ -331,7 +349,7 @@ export async function removeSteleCascade(steleId: string): Promise<void> {
   });
 }
 
-/** 级联删除拓本 → 损泐 / 钤印 / 涉及的比对记录 */
+/** 级联删除拓本 → 损泐 / 钤印 / 涉及的比对记录；指向它的重份标记一并摘除，避免悬空引用 */
 export async function removeRubbingCascade(rubbingId: string): Promise<void> {
   await db.transaction('rw', [db.rubbings, db.losses, db.seals, db.compares], async () => {
     await db.losses.where('rubbingId').equals(rubbingId).delete();
@@ -339,6 +357,10 @@ export async function removeRubbingCascade(rubbingId: string): Promise<void> {
     const compares = await db.compares.toArray();
     const affected = compares.filter((row) => row.rubbingIdA === rubbingId || row.rubbingIdB === rubbingId);
     if (affected.length > 0) await db.compares.bulkDelete(affected.map((row) => row.id));
+    const marked = (await db.rubbings.toArray()).filter((row) => row.duplicateOf === rubbingId);
+    if (marked.length > 0) {
+      await db.rubbings.bulkPut(marked.map((row) => ({ ...row, duplicateOf: null, updatedAt: Date.now() })));
+    }
     await db.rubbings.delete(rubbingId);
   });
 }

@@ -1,10 +1,12 @@
 /**
  * /rubbings 拓本登记
  * 录入拓法、纸墨、尺寸与收藏号并管理钤印；同一碑刻下自动生成版本序号，支持批量改状态。
+ * 按收藏号识别重份（同碑同号的后登本），列出分组并可标记 / 撤销；已标重份由比对台跳过。
  * 消费 Rubbing、Seal、Stele；复用 <FilterBar>、<StatBadge>、<EmptyPanel>、<LossTag>。
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
+  Alert,
   App as AntdApp,
   Button,
   Card,
@@ -16,10 +18,11 @@ import {
   Space,
   Table,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { DeleteOutlined, EditOutlined, PlusOutlined, TagsOutlined } from '@ant-design/icons';
+import { CopyOutlined, DeleteOutlined, EditOutlined, PlusOutlined, TagsOutlined } from '@ant-design/icons';
 import EmptyPanel from '@/components/common/EmptyPanel';
 import FilterBar, { useFilterQuery, type FilterSelectConfig } from '@/components/common/FilterBar';
 import StatBadge from '@/components/common/StatBadge';
@@ -32,6 +35,7 @@ import {
   createRubbing,
   createSeal,
   loadRubbings,
+  markDuplicateGroup,
   removeRubbing,
   removeSeal,
   resetRubbingFilters,
@@ -42,6 +46,7 @@ import {
   setRubbingKeyword,
   setRubbingStates,
   setRubbingSteleFilter,
+  unmarkDuplicate,
   updateRubbing,
   updateSeal,
 } from '@/stores/rubbingSlice';
@@ -74,6 +79,7 @@ import {
 } from '@/types/seal';
 import { selectLosses } from '@/stores/lossSlice';
 import LossTag from '@/components/common/LossTag';
+import { findDuplicateGroups, findOrphanMarked, normalizeCollectionNo } from '@/utils/duplicate';
 
 const FILTER_KEYS = ['method', 'state'] as const;
 
@@ -124,10 +130,44 @@ export default function RubbingList() {
       cataloged,
       catalogedPercent: total === 0 ? 0 : Math.round((cataloged / total) * 100),
       toCompare: rubbings.filter((rubbing) => rubbing.state === 'toCompare').length,
+      duplicates: rubbings.filter((rubbing) => rubbing.duplicateOf !== null).length,
       seals: seals.length,
       losses: losses.length,
     };
   }, [losses.length, rubbings, seals.length]);
+
+  /** 重份识别：同碑同收藏号（非空）归组，先登为正本、后登为重份候选 */
+  const duplicateGroups = useMemo(() => findDuplicateGroups(rubbings), [rubbings]);
+  /** 已标记但收藏号已与正本对不上的悬空标记（如标记后改了号），给出撤销入口 */
+  const orphanMarked = useMemo(() => findOrphanMarked(rubbings, duplicateGroups), [duplicateGroups, rubbings]);
+
+  const handleMarkGroup = (keeperId: string, duplicateIds: string[]): void => {
+    void dispatch(markDuplicateGroup({ keeperId, duplicateIds }))
+      .unwrap()
+      .then(() => message.success(`已把 ${duplicateIds.length} 份后登拓本标为重份，比对台将跳过`));
+  };
+
+  const handleUnmark = (rubbing: Rubbing): void => {
+    void dispatch(unmarkDuplicate(rubbing.id))
+      .unwrap()
+      .then(() => message.success(`已撤销第 ${rubbing.versionNo} 版的重份标记，恢复参与比对`));
+  };
+
+  const watchSteleId = Form.useWatch('steleId', form);
+  const watchCollectionNo = Form.useWatch('collectionNo', form);
+  /** 登记表单内的收藏号撞号提醒：与同碑已有拓本同号，保存后将识别为重份 */
+  const collectionCollision = useMemo(() => {
+    const collectionNo = normalizeCollectionNo(watchCollectionNo ?? '');
+    if (!open || collectionNo.length === 0 || !watchSteleId) return null;
+    return (
+      rubbings.find(
+        (rubbing) =>
+          rubbing.id !== editing?.id &&
+          rubbing.steleId === watchSteleId &&
+          normalizeCollectionNo(rubbing.collectionNo) === collectionNo,
+      ) ?? null
+    );
+  }, [editing?.id, open, rubbings, watchCollectionNo, watchSteleId]);
 
   const steleTitle = (steleId: string): string => steles.find((stele) => stele.id === steleId)?.title ?? steleId;
 
@@ -201,14 +241,30 @@ export default function RubbingList() {
     {
       title: '版本',
       dataIndex: 'versionNo',
-      width: 90,
+      width: 150,
       sorter: (a, b) => a.versionNo - b.versionNo,
-      render: (value: number, record) => (
-        <Space size={4}>
-          <Tag color="#2f3a34">第 {value} 版</Tag>
-          <Tag color={RUBBING_STATE_COLOR[record.state]}>{RUBBING_STATE_LABEL[record.state]}</Tag>
-        </Space>
-      ),
+      render: (value: number, record) => {
+        const keeper = record.duplicateOf
+          ? rubbings.find((rubbing) => rubbing.id === record.duplicateOf)
+          : undefined;
+        return (
+          <Space size={4} wrap>
+            <Tag color="#2f3a34">第 {value} 版</Tag>
+            <Tag color={RUBBING_STATE_COLOR[record.state]}>{RUBBING_STATE_LABEL[record.state]}</Tag>
+            {record.duplicateOf ? (
+              <Tooltip
+                title={
+                  keeper
+                    ? `与第 ${keeper.versionNo} 版同收藏号（${keeper.collectionNo}），先登为正本；比对台已跳过此份`
+                    : '已标为重份，比对台已跳过此份'
+                }
+              >
+                <Tag color="red">重份</Tag>
+              </Tooltip>
+            ) : null}
+          </Space>
+        );
+      },
     },
     { title: '碑刻', dataIndex: 'steleId', width: 130, render: (value: string) => steleTitle(value) },
     { title: '拓法', dataIndex: 'method', width: 100, render: (value: RubbingMethod) => RUBBING_METHOD_LABEL[value] },
@@ -303,9 +359,85 @@ export default function RubbingList() {
         <StatBadge label="拓本总数" value={stat.total} suffix="份" tone="primary" />
         <StatBadge label="已编目占比" value={`${stat.catalogedPercent}%`} percent={stat.catalogedPercent} tone="success" />
         <StatBadge label="待比对" value={stat.toCompare} suffix="份" tone="warning" />
+        <StatBadge label="重份" value={stat.duplicates} suffix="份" tone="danger" />
         <StatBadge label="钤印总数" value={stat.seals} suffix="方" tone="info" />
         <StatBadge label="损泐字位" value={stat.losses} suffix="条" tone="danger" />
       </div>
+
+      {duplicateGroups.length > 0 || orphanMarked.length > 0 ? (
+        <Card
+          size="small"
+          style={{ marginTop: 16 }}
+          title={
+            <Space size={6}>
+              <CopyOutlined />
+              <span>重份识别（按收藏号）</span>
+              <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 'normal' }}>
+                同碑同收藏号视为同一件的重份，先登为正本；标为重份后两份都保留，比对台跳过重份，撤销标记即复原
+              </Typography.Text>
+            </Space>
+          }
+        >
+          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+            {duplicateGroups.map((group) => {
+              const unmarked = group.duplicates.filter((rubbing) => !rubbing.duplicateOf);
+              return (
+                <Space key={group.key} size={6} wrap>
+                  <Tag color="#a8623a">收藏号 {group.collectionNo}</Tag>
+                  <Typography.Text>{steleTitle(group.steleId)}</Typography.Text>
+                  <Typography.Text type="secondary">正本：第 {group.keeper.versionNo} 版（先登）</Typography.Text>
+                  <Typography.Text type="secondary">重份：</Typography.Text>
+                  {group.duplicates.map((dup) => (
+                    <Space key={dup.id} size={2}>
+                      <Tag color={dup.duplicateOf ? 'red' : 'default'}>
+                        第 {dup.versionNo} 版{dup.duplicateOf ? ' · 已标重份' : ''}
+                      </Tag>
+                      {dup.duplicateOf ? (
+                        <Button size="small" type="link" onClick={() => handleUnmark(dup)}>
+                          撤销标记
+                        </Button>
+                      ) : (
+                        <Button size="small" type="link" onClick={() => handleMarkGroup(group.keeper.id, [dup.id])}>
+                          标为重份
+                        </Button>
+                      )}
+                    </Space>
+                  ))}
+                  {unmarked.length > 1 ? (
+                    <Button
+                      size="small"
+                      onClick={() => handleMarkGroup(group.keeper.id, unmarked.map((rubbing) => rubbing.id))}
+                    >
+                      全部标为重份（{unmarked.length}）
+                    </Button>
+                  ) : null}
+                </Space>
+              );
+            })}
+            {orphanMarked.length > 0 ? (
+              <Alert
+                type="warning"
+                showIcon
+                message="以下拓本已标重份，但收藏号与正本已不一致（可能标记后改过号）"
+                description={
+                  <Space size={6} wrap>
+                    {orphanMarked.map((rubbing) => (
+                      <Space key={rubbing.id} size={2}>
+                        <Tag color="red">
+                          第 {rubbing.versionNo} 版 · {rubbing.collectionNo || '未编'}
+                        </Tag>
+                        <Button size="small" type="link" onClick={() => handleUnmark(rubbing)}>
+                          撤销标记
+                        </Button>
+                      </Space>
+                    ))}
+                  </Space>
+                }
+              />
+            ) : null}
+          </Space>
+        </Card>
+      ) : null}
 
       <FilterBar
         keyword={url.keyword}
@@ -420,6 +552,15 @@ export default function RubbingList() {
               <Input placeholder="如：明拓" />
             </Form.Item>
           </Space>
+          {collectionCollision ? (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message={`收藏号与第 ${collectionCollision.versionNo} 版相同`}
+              description="同一碑刻下收藏号相同的拓本会识别为重份；保存后可在列表上方「重份识别」中标记，比对台将自动跳过。"
+            />
+          ) : null}
           <Form.Item name="state" label="状态" rules={[{ required: true }]}>
             <Select options={[...RUBBING_STATE_OPTIONS]} />
           </Form.Item>

@@ -1,9 +1,10 @@
 /**
  * /compare 同碑多版本比对与断代
  * 选定两个拓本即生成损泐差异清单并排展示，可落库为比对记录并回写断代结论。
+ * 已标重份的拓本（与先登本同收藏号）不参与 A/B 选择，避免同一件自己跟自己比。
  * 消费 Compare、Loss、Rubbing；复用 <LossTag>、<StatBadge>、<EmptyPanel>、<FilterBar>。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   Alert,
   App as AntdApp,
@@ -19,6 +20,7 @@ import {
   Space,
   Table,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
@@ -85,22 +87,29 @@ export default function CompareView() {
     [rubbings, steleId],
   );
 
-  // 同碑切换时重置比对双方为前两版
+  /** 已标重份的拓本不参与比对：同一件的后登本与正本自比没有版本意义 */
+  const comparableRubbings = useMemo(
+    () => steleRubbings.filter((rubbing) => !rubbing.duplicateOf),
+    [steleRubbings],
+  );
+  const skippedDuplicates = steleRubbings.length - comparableRubbings.length;
+
+  // 同碑切换时重置比对双方为前两版（重份已除外）
   useEffect(() => {
-    const [first, second] = steleRubbings;
+    const [first, second] = comparableRubbings;
     if (!first) {
       dispatch(setCompareA(null));
       dispatch(setCompareB(null));
       return;
     }
-    if (!compareAId || !steleRubbings.some((item) => item.id === compareAId)) dispatch(setCompareA(first.id));
-    if (second && (!compareBId || !steleRubbings.some((item) => item.id === compareBId))) {
-      dispatch(setCompareB(second.id));
+    if (!compareAId || !comparableRubbings.some((item) => item.id === compareAId)) dispatch(setCompareA(first.id));
+    if (!compareBId || !comparableRubbings.some((item) => item.id === compareBId)) {
+      dispatch(setCompareB(second?.id ?? null));
     }
-  }, [compareAId, compareBId, dispatch, steleRubbings]);
+  }, [compareAId, compareBId, comparableRubbings, dispatch]);
 
-  const rubbingA = steleRubbings.find((item) => item.id === compareAId);
-  const rubbingB = steleRubbings.find((item) => item.id === compareBId);
+  const rubbingA = comparableRubbings.find((item) => item.id === compareAId);
+  const rubbingB = comparableRubbings.find((item) => item.id === compareBId);
   const diff = useLossDiff(compareAId ?? undefined, compareBId ?? undefined);
   const stele = steles.find((item) => item.id === steleId);
 
@@ -184,19 +193,34 @@ export default function CompareView() {
     setOpen(false);
   };
 
+  /** 历史比对记录里若涉及现已标重份的拓本，回显「重份」标记 */
+  const renderRecordRubbing = (rubbingId: string): ReactNode => {
+    const rubbing = rubbings.find((item) => item.id === rubbingId);
+    return (
+      <Space size={4}>
+        <span>第 {rubbing?.versionNo ?? '?'} 版</span>
+        {rubbing?.duplicateOf ? (
+          <Tooltip title="该拓本现已标为重份（同收藏号的后登本），此记录为标记前所留">
+            <Tag color="red">重份</Tag>
+          </Tooltip>
+        ) : null}
+      </Space>
+    );
+  };
+
   const columns: ColumnsType<Compare> = [
     { title: '比对日期', dataIndex: 'date', width: 120, sorter: (a, b) => a.date.localeCompare(b.date) },
     {
       title: 'A 拓本',
       dataIndex: 'rubbingIdA',
-      width: 110,
-      render: (value: string) => `第 ${rubbings.find((item) => item.id === value)?.versionNo ?? '?'} 版`,
+      width: 130,
+      render: (value: string) => renderRecordRubbing(value),
     },
     {
       title: 'B 拓本',
       dataIndex: 'rubbingIdB',
-      width: 110,
-      render: (value: string) => `第 ${rubbings.find((item) => item.id === value)?.versionNo ?? '?'} 版`,
+      width: 130,
+      render: (value: string) => renderRecordRubbing(value),
     },
     { title: '差异字数', dataIndex: 'diffCount', width: 110, sorter: (a, b) => a.diffCount - b.diffCount },
     {
@@ -278,7 +302,7 @@ export default function CompareView() {
               style={{ minWidth: 180 }}
               value={compareAId ?? undefined}
               placeholder="拓本 A"
-              options={steleRubbings.map((item) => ({ value: item.id, label: `第 ${item.versionNo} 版 · ${item.dateGuess || '年代待考'}` }))}
+              options={comparableRubbings.map((item) => ({ value: item.id, label: `第 ${item.versionNo} 版 · ${item.dateGuess || '年代待考'}` }))}
               onChange={(value: string) => dispatch(setCompareA(value))}
             />
           </Space>
@@ -298,13 +322,18 @@ export default function CompareView() {
               style={{ minWidth: 180 }}
               value={compareBId ?? undefined}
               placeholder="拓本 B"
-              options={steleRubbings.map((item) => ({ value: item.id, label: `第 ${item.versionNo} 版 · ${item.dateGuess || '年代待考'}` }))}
+              options={comparableRubbings.map((item) => ({ value: item.id, label: `第 ${item.versionNo} 版 · ${item.dateGuess || '年代待考'}` }))}
               onChange={(value: string) => dispatch(setCompareB(value))}
             />
           </Space>
           <Typography.Text type="secondary">
             A 损泐 {diff.result.totalA} 条 · B 损泐 {diff.result.totalB} 条
           </Typography.Text>
+          {skippedDuplicates > 0 ? (
+            <Tooltip title="与先登本同收藏号的后登本已标为重份，不再参与比对；可在拓本登记页撤销标记">
+              <Typography.Text type="warning">已跳过重份 {skippedDuplicates} 份</Typography.Text>
+            </Tooltip>
+          ) : null}
           <Button
             size="small"
             onClick={async () => {
